@@ -22,6 +22,8 @@ struct Provider: Identifiable {
                  keyURL: "https://platform.kimi.com/"),
         Provider(id: "siliconflow", name: "硅基流动", base: "https://api.siliconflow.cn/v1", model: "Qwen/Qwen3-VL-32B-Instruct",
                  keyURL: "https://cloud.siliconflow.cn/"),
+        Provider(id: "ollama", name: "本机模型（Ollama，免费）", base: "http://127.0.0.1:11434/v1", model: "qwen3-vl:32b",
+                 keyURL: "https://ollama.com/download"),
         Provider(id: "custom", name: "其他（OpenAI 兼容接口）", base: "", model: "", keyURL: ""),
     ]
 }
@@ -217,7 +219,7 @@ final class Runner: ObservableObject {
     func start() {
         guard !running, !src.isEmpty, !out.isEmpty else { return }
         if backend == "api" {
-            if apiBase.isEmpty || apiModel.isEmpty || apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            if apiBase.isEmpty || apiModel.isEmpty || (provider != "ollama" && apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) {
                 finalMessage = "用国产大模型要先填好接口地址、模型和 API Key"
                 return
             }
@@ -391,7 +393,7 @@ struct ContentView: View {
                                     ForEach(Provider.all) { Text($0.name).tag($0.id) }
                                 }.frame(width: 240).labelsHidden()
                                 if let u = URL(string: r.currentProvider.keyURL), !r.currentProvider.keyURL.isEmpty {
-                                    Link("去申请 API Key", destination: u).font(.callout)
+                                    Link(r.provider == "ollama" ? "下载 Ollama" : "去申请 API Key", destination: u).font(.callout)
                                 }
                                 Spacer()
                             }
@@ -409,8 +411,13 @@ struct ContentView: View {
                         }
                         GridRow {
                             Text("API Key")
-                            SecureField("只保存在这台 Mac 的钥匙串里", text: $r.apiKey).accessibilityLabel("API Key")
-                            Button("测试连接") { r.testConnection() }.disabled(r.testing || r.apiKey.isEmpty)
+                            if r.provider == "ollama" {
+                                Text("不用填。先装 Ollama，再在终端运行 ollama pull \(r.apiModel)（32b 约 20 GB，要 32 GB 以上内存；内存小改用 qwen3-vl:8b）。免费、不联网，但比 Codex / Claude 慢很多，准确度也明显低")
+                                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                            } else {
+                                SecureField("只保存在这台 Mac 的钥匙串里", text: $r.apiKey).accessibilityLabel("API Key")
+                            }
+                            Button("测试连接") { r.testConnection() }.disabled(r.testing || (r.provider != "ollama" && r.apiKey.isEmpty))
                         }
                         if !r.testMessage.isEmpty {
                             GridRow {

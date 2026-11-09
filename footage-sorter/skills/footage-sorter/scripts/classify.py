@@ -15,6 +15,7 @@ import glob
 import io
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -25,7 +26,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 sys.dont_write_bytecode = True  # no __pycache__ inside the installed skill folder
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from common import find_cli, read_jsonl, work_paths  # noqa: E402
+from common import UNSURE, find_cli, load_vocab, read_jsonl, work_paths  # noqa: E402
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ap = argparse.ArgumentParser()
@@ -37,12 +38,13 @@ ap.add_argument("--jobs", type=int, help="parallel requests; default: codex/clau
 ap.add_argument("--timeout", type=int, default=900, help="seconds per call")
 ap.add_argument("--api-base", default="", help="OpenAI-compatible base URL, e.g. https://dashscope.aliyuncs.com/compatible-mode/v1")
 ap.add_argument("--api-model", default="", help="a vision model name")
-ap.add_argument("--api-provider", default="", help="qwen|doubao|glm|kimi|deepseek|siliconflow|custom (default: guessed from the URL)")
+ap.add_argument("--api-provider", default="", help="qwen|doubao|glm|kimi|deepseek|siliconflow|ollama|custom (default: guessed from the URL)")
 ap.add_argument("--test", action="store_true", help="api only: send one tiny picture and report whether the model answers")
 args = ap.parse_args()
 API = args.backend == "api"
+LOCAL = API and (args.api_provider == "ollama" or ":11434" in args.api_base)
 args.sheets_per_call = args.sheets_per_call or (1 if API else 3)
-args.jobs = args.jobs or (3 if API else 2)
+args.jobs = args.jobs or (1 if LOCAL else 3 if API else 2)  # a local model answers one request at a time
 
 
 def emit(**kw):
@@ -62,6 +64,7 @@ TWEAKS = {
     "kimi": {"host": "moonshot", "json": True, "extra": {"reasoning_effort": "low"}, "no_temperature": True, "max_key": "max_completion_tokens"},
     "deepseek": {"host": "deepseek.com", "json": True, "extra": {"thinking": {"type": "disabled"}}},
     "siliconflow": {"host": "siliconflow", "json": False, "extra": {}},
+    "ollama": {"host": ":11434", "json": True, "extra": {}, "local": True, "schema": True},  # free, on this Mac; enforces the schema
     "custom": {"host": "", "json": True, "extra": {}},
 }
 prov = args.api_provider or next((k for k, t in TWEAKS.items() if t["host"] and t["host"] in args.api_base), "custom")
@@ -73,9 +76,45 @@ if prov == "qwen" and args.api_model.startswith("qwen3."):  # qwen3.x text+visio
 _json_mode = [TW["json"]]  # also switched off at the first refusal
 
 
+def ollama_chat(content, system=""):
+    """Ollama's native /api/chat: small context window (the default 256k one does not fit in RAM for a 32B model),
+    thinking off, output constrained to the vocab schema."""
+    host = re.sub(r"/v1/?$", "", args.api_base.rstrip("/"))
+    text = "".join(p.get("text", "") for p in content if p.get("type") == "text")
+    images = [p["image_url"]["url"].split(",", 1)[1] for p in content if p.get("type") == "image_url"]
+    msgs = ([{"role": "system", "content": system}] if system else []) + [{"role": "user", "content": text, "images": images}]
+    body = {"model": args.api_model, "messages": msgs, "stream": False, "think": False, "keep_alive": "10m",
+            "format": SCHEMA if SCHEMA else "json", "options": {"num_ctx": 16384, "temperature": 0.2, "num_predict": 8192}}
+    req = urllib.request.Request(host + "/api/chat", data=json.dumps(body, ensure_ascii=False).encode("utf-8"), method="POST",
+                                 headers={"Content-Type": "application/json"})
+    for attempt in range(3):
+        try:
+            with urllib.request.urlopen(req, timeout=args.timeout) as r:
+                return json.loads(r.read().decode("utf-8"))["message"].get("content", "")
+        except urllib.error.HTTPError as e:
+            detail = e.read().decode("utf-8", "replace")[:300]
+            if e.code == 404:
+                raise Fatal(f"本机还没有这个模型：在终端运行 ollama pull {args.api_model}（{detail[:120]}）")
+            if e.code == 400 and "think" in detail and body.get("think") is False:
+                body.pop("think")  # models without a thinking switch
+                req = urllib.request.Request(host + "/api/chat", data=json.dumps(body, ensure_ascii=False).encode("utf-8"),
+                                             method="POST", headers={"Content-Type": "application/json"})
+                continue
+            raise RuntimeError(f"HTTP {e.code}: {detail}")
+        except urllib.error.URLError as e:
+            raise Fatal(f"连不上本机的 Ollama：{e.reason}。请先打开 Ollama（或在终端运行 ollama serve）")
+        except (TimeoutError, OSError) as e:
+            if attempt < 1:
+                continue
+            raise RuntimeError(f"本机模型没有正常回答：{e!r}"[:300])
+    raise RuntimeError("多次重试后仍失败")
+
+
 def api_chat(content, system=""):
     """POST {base}/chat/completions; returns the assistant text. Retries 429/5xx; raises Fatal on config errors."""
-    key = os.environ.get("FOOTAGE_API_KEY", "").strip()
+    if TW.get("local"):
+        return ollama_chat(content, system)
+    key = os.environ.get("FOOTAGE_API_KEY", "").strip() or ("ollama" if TW.get("local") else "")
     if not key:
         raise Fatal("没有填 API Key")
     if not args.api_base or not args.api_model:
@@ -88,6 +127,8 @@ def api_chat(content, system=""):
             body["temperature"] = 0.2
         if _json_mode[0]:
             body["response_format"] = {"type": "json_object"}
+            if TW.get("schema") and SCHEMA:  # constrained decoding: only vocab words can come out
+                body["response_format"] = {"type": "json_schema", "json_schema": {"name": "clips", "schema": SCHEMA, "strict": True}}
         req = urllib.request.Request(url, data=json.dumps(body, ensure_ascii=False).encode("utf-8"), method="POST",
                                      headers={"Content-Type": "application/json", "Authorization": "Bearer " + key})
         try:
@@ -109,7 +150,8 @@ def api_chat(content, system=""):
             if e.code in (401, 403):
                 raise Fatal(f"API Key 不对、没开通这个模型，或者没有权限（HTTP {e.code}）：{detail[:200]}")
             if e.code == 404:
-                raise Fatal(f"接口地址或模型名不对（HTTP 404）：{detail[:200]}")
+                hint = f"。本机模型要先下载：在终端运行 ollama pull {args.api_model}" if TW.get("local") else ""
+                raise Fatal(f"接口地址或模型名不对（HTTP 404）：{detail[:200]}{hint}")
             if e.code == 400 and ("image" in detail.lower() or "vision" in detail.lower() or "multimodal" in detail.lower()):
                 raise Fatal(f"这个模型可能不支持看图，请换一个视觉模型：{detail[:200]}")
             if e.code in (429, 500, 502, 503, 504) and attempt < 3:
@@ -120,13 +162,48 @@ def api_chat(content, system=""):
             if attempt < 2:
                 time.sleep(5)
                 continue
-            raise Fatal(f"连不上接口地址：{e.reason}")
+            raise Fatal(f"连不上接口地址：{e.reason}" + ("。本机模型要先打开 Ollama（或在终端运行 ollama serve）" if TW.get("local") else ""))
         except (TimeoutError, OSError, ValueError, KeyError, IndexError) as e:  # read timeout, bad JSON body …
             if attempt < 2:
                 time.sleep(5)
                 continue
             raise RuntimeError(f"接口没有正常回答：{e!r}"[:300])
     raise RuntimeError("多次重试后仍失败")
+
+
+SCHEMA = None  # set once the work folder is known
+
+
+def sanitize(c, dims, rating_ok=(0, 1, 2, 3)):
+    """Last resort for weaker models: out-of-vocab labels become 不确定 instead of losing the whole sheet."""
+    fixed = 0
+    for d in dims:
+        allowed = set(d["values"]) | {UNSURE}
+        v = c.get(d["key"])
+        if d.get("multi"):
+            vals = v if isinstance(v, list) else [x for x in str(v or "").replace("，", "、").split("、") if x]
+            keep = [x for x in vals if x in allowed]
+            fixed += len(vals) - len(keep)
+            c[d["key"]] = keep or ([] if d.get("optional") else [UNSURE])
+        else:
+            if v in allowed or (d.get("optional") and v in ("", None)):
+                c[d["key"]] = v or ""
+            else:
+                fixed += 1
+                c[d["key"]] = "" if d.get("optional") else UNSURE
+    try:
+        c["rating"] = int(c.get("rating"))
+        assert c["rating"] in rating_ok
+    except Exception:
+        c["rating"], fixed = 1, fixed + 1
+    for k in ("dup_group", "place_hint", "desc", "note"):
+        c[k] = str(c.get(k) or "")
+    if c["dup_group"] and not c["dup_group"].startswith("G-"):
+        c["dup_group"] = ""
+    c["desc"] = c["desc"][:30] or "（AI 没写描述）"
+    if fixed:
+        c["note"] = (c["note"] + "；" if c["note"] else "") + f"有 {fixed} 个标签不合规，已改成「不确定」"
+    return fixed
 
 
 def data_url(path):
@@ -184,6 +261,8 @@ if not exe:
     sys.exit(2)
 brief = open(os.path.join(P["work"], "brief_exec.md"), encoding="utf-8").read()
 schema_path = os.path.join(P["work"], "schema.json")
+SCHEMA = json.load(open(schema_path, encoding="utf-8")) if os.path.exists(schema_path) else None
+DIMS = load_vocab(P["work"])["dimensions"]
 batches = json.load(open(P["batches"], encoding="utf-8"))
 sheets = [(s, None) for b in batches for s in b["sheets"]]
 sheet_ids = {}
@@ -259,6 +338,16 @@ def run(group):
                              capture_output=True, text=True)
         if chk.returncode == 0:
             return len(ids)
+        if attempt == 1 and keep:  # second miss: repair out-of-vocab labels to 不确定 rather than drop the sheet
+            fixed = sum(sanitize(c, DIMS) for c in keep)
+            with open(part, "w", encoding="utf-8") as f:
+                for c in keep:
+                    f.write(json.dumps(c, ensure_ascii=False) + "\n")
+            chk = subprocess.run([sys.executable, os.path.join(HERE, "check.py"), "--work", P["work"], "--part", part, "--ids", ",".join(ids)],
+                                 capture_output=True, text=True)
+            if chk.returncode == 0:
+                emit(message=f"{name}：有 {fixed} 个标签不合规，已改成「不确定」后收下")
+                return len(ids)
         if attempt == 1:  # keep the failed answer for inspection, but out of cls/ so a re-run retries these clips
             os.replace(part, os.path.join(tmp, f"failed_{name}.jsonl"))
         extra = "\n上一次的回答有这些问题，请改正后重新完整回答：\n" + (err or chk.stdout)[-1500:] + "\n"
