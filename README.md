@@ -56,3 +56,7 @@ codex plugin add footage-sorter@sucai-tools
 | `双击安装.command` | 把技能复制进 Codex / Claude Code |
 
 自己编译桌面程序：装好 Xcode 命令行工具后运行 `app/build_app.sh`。
+
+## 许可证
+
+MIT，可以自由使用、修改、转发，见 [LICENSE](LICENSE)。
