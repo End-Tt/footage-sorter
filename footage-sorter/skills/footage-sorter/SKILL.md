@@ -71,7 +71,9 @@ python3 <技能目录>/scripts/make_brief.py --work <工作文件夹>
 > 你是素材分类助手。先完整读这份说明：`<工作文件夹>/brief.md`。你负责第 {batch} 批，共 {n} 条（{第一个编号}–{最后一个编号}）。用看图工具（Claude Code 的 Read、Codex 的 view_image）逐张看这些联系表：{sheets 列表}。按说明给每条写一行 JSON，写到 `{out}`。写完按说明运行检查脚本直到 OK。只看联系表图片，不要打开或改动原视频，不要改别的文件。最后按说明交回摘要。
 
 **更省的做法（推荐，素材多时尤其）**：不派子代理，直接运行
-`python3 <技能目录>/scripts/classify.py --work <工作文件夹> --backend codex --effort medium`（或 `--backend claude`）。它把联系表图片直接交给本机的 `codex exec`（或 `claude -p`），按 `schema.json` 拿回结构化结果并自动检查、失败重试一次；中断后重跑会跳过已分好的。实测 Codex 推理强度「中」：27 条不到 1 分钟、额度几乎不动，标签质量和子代理做法一致。`make_brief.py` 会同时生成它需要的 `brief_exec.md` 和 `schema.json`。整条流程（第 1、3、4、5、6 步）也可以一条命令跑完：`python3 <技能目录>/scripts/run_all.py --src <素材文件夹> --out <输出文件夹> --backend codex`（不处理行程表）。
+`python3 <技能目录>/scripts/classify.py --work <工作文件夹> --backend codex --effort medium`（或 `--backend claude`）。它把联系表图片直接交给本机的 `codex exec`（或 `claude -p`），按 `schema.json` 拿回结构化结果并自动检查、失败重试一次；中断后重跑会跳过已分好的。实测 Codex 推理强度「中」：27 条不到 1 分钟、额度几乎不动，标签质量和子代理做法一致。`make_brief.py` 会同时生成它需要的 `brief_exec.md` 和 `schema.json`。**用国产大模型（或任何 OpenAI 兼容的视觉接口）**：`--backend api --api-base <接口地址> --api-model <能看图的模型名>`，API Key 放在环境变量 `FOOTAGE_API_KEY` 里（不要写进命令行或文件，也不要替用户保管）。先跑一次 `classify.py --backend api --api-base … --api-model … --test` 确认连得上、模型能看图。每次请求发 1 张联系表（10 条），3 个并行；模型不支持 JSON 模式时会自动改用普通回答再解析。只能处理文字的模型（如 DeepSeek 的对话模型）做不了。
+
+整条流程（第 1、3、4、5、6 步）也可以一条命令跑完：`python3 <技能目录>/scripts/run_all.py --src <素材文件夹> --out <输出文件夹> --backend codex`（不处理行程表）。
 
 没有子代理可用就自己一批一批做，做法相同：看完一批、写完 `out`、跑过检查，再做下一批（中途断了也不丢已做的）。
 

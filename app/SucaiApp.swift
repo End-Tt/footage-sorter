@@ -2,7 +2,51 @@
 // The engine and the AI CLIs (codex / claude) run through a login zsh, because apps opened from Finder
 // do not inherit the user's shell PATH (Homebrew, npm, nvm …).
 import AppKit
+import Security
 import SwiftUI
+
+/// OpenAI-compatible vision APIs (国产大模型). base/model are editable defaults; the key lives in the Keychain.
+struct Provider: Identifiable {
+    let id: String, name: String, base: String, model: String, keyURL: String
+    // checked against the official docs on 2026-11-09; model names change often — the fields stay editable
+    static let all: [Provider] = [
+        Provider(id: "qwen", name: "通义千问（阿里云百炼）", base: "https://dashscope.aliyuncs.com/compatible-mode/v1", model: "qwen3-vl-plus",
+                 keyURL: "https://bailian.console.aliyun.com/"),
+        Provider(id: "doubao", name: "豆包（火山方舟）", base: "https://ark.cn-beijing.volces.com/api/v3", model: "doubao-seed-2-1-lite-260915",
+                 keyURL: "https://console.volcengine.com/ark"),
+        Provider(id: "glm", name: "智谱 GLM", base: "https://open.bigmodel.cn/api/paas/v4", model: "glm-5v-turbo",
+                 keyURL: "https://open.bigmodel.cn/"),
+        Provider(id: "deepseek", name: "DeepSeek", base: "https://api.deepseek.com", model: "deepseek-flash",
+                 keyURL: "https://platform.deepseek.com/"),
+        Provider(id: "kimi", name: "Kimi（月之暗面）", base: "https://api.moonshot.cn/v1", model: "kimi-k3.1-pro",
+                 keyURL: "https://platform.kimi.com/"),
+        Provider(id: "siliconflow", name: "硅基流动", base: "https://api.siliconflow.cn/v1", model: "Qwen/Qwen3-VL-32B-Instruct",
+                 keyURL: "https://cloud.siliconflow.cn/"),
+        Provider(id: "custom", name: "其他（OpenAI 兼容接口）", base: "", model: "", keyURL: ""),
+    ]
+}
+
+enum Keychain {
+    static let service = "local.sucai.footage-sorter"
+    static func base(_ account: String) -> [String: Any] {
+        [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service, kSecAttrAccount as String: account]
+    }
+    static func save(_ account: String, _ value: String) {
+        SecItemDelete(base(account) as CFDictionary)
+        guard !value.isEmpty else { return }
+        var a = base(account)
+        a[kSecValueData as String] = Data(value.utf8)
+        SecItemAdd(a as CFDictionary, nil)
+    }
+    static func load(_ account: String) -> String {
+        var q = base(account)
+        q[kSecReturnData as String] = true
+        q[kSecMatchLimit as String] = kSecMatchLimitOne
+        var out: AnyObject?
+        guard SecItemCopyMatching(q as CFDictionary, &out) == errSecSuccess, let d = out as? Data else { return "" }
+        return String(data: d, encoding: .utf8) ?? ""
+    }
+}
 
 struct Stage: Identifiable {
     let id: String
@@ -18,6 +62,52 @@ final class Runner: ObservableObject {
     @Published var event = ""
     @Published var backend = UserDefaults.standard.string(forKey: "backend") ?? "codex"
     @Published var effort = UserDefaults.standard.string(forKey: "effort") ?? "medium"
+    @Published var provider = UserDefaults.standard.string(forKey: "provider") ?? "qwen" { didSet { loadProvider() } }
+    @Published var apiBase = ""
+    @Published var apiModel = ""
+    @Published var apiKey = ""
+    @Published var testMessage = ""
+    @Published var testing = false
+
+    init() { loadProvider() }
+
+    var currentProvider: Provider { Provider.all.first { $0.id == provider } ?? Provider.all[0] }
+
+    func loadProvider() {
+        let p = currentProvider
+        apiBase = UserDefaults.standard.string(forKey: "apiBase." + p.id) ?? p.base
+        apiModel = UserDefaults.standard.string(forKey: "apiModel." + p.id) ?? p.model
+        apiKey = Keychain.load(p.id)
+        testMessage = ""
+    }
+
+    func saveProvider() {
+        UserDefaults.standard.set(provider, forKey: "provider")
+        UserDefaults.standard.set(apiBase, forKey: "apiBase." + provider)
+        UserDefaults.standard.set(apiModel, forKey: "apiModel." + provider)
+        Keychain.save(provider, apiKey.trimmingCharacters(in: .whitespacesAndNewlines))
+    }
+
+    func testConnection() {
+        saveProvider()
+        testing = true
+        testMessage = "测试中…"
+        let p = zsh(["python3", engine + "/classify.py", "--backend", "api", "--api-base", apiBase, "--api-model", apiModel, "--api-provider", provider, "--test"],
+                    env: ["FOOTAGE_API_KEY": apiKey.trimmingCharacters(in: .whitespacesAndNewlines)])
+        let pipe = Pipe()
+        p.standardOutput = pipe
+        p.standardError = pipe
+        p.terminationHandler = { _ in
+            let t = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+            let line = t.split(separator: "\n").last(where: { $0.hasPrefix("{") }).map(String.init) ?? ""
+            let j = (try? JSONSerialization.jsonObject(with: Data(line.utf8))) as? [String: Any]
+            DispatchQueue.main.async {
+                self.testing = false
+                self.testMessage = (j?["ok"] as? Bool ?? false ? "✅ " : "⚠️ ") + (j?["message"] as? String ?? t.suffix(200).description)
+            }
+        }
+        try? p.run()
+    }
     @Published var organize = UserDefaults.standard.string(forKey: "organize") ?? "copy"
     @Published var makeFCP = UserDefaults.standard.bool(forKey: "makeFCP")
     @Published var deps: [String: Any] = [:]
@@ -39,11 +129,12 @@ final class Runner: ObservableObject {
     var engine: String { (Bundle.main.resourcePath ?? ".") + "/engine" }
 
     /// /bin/zsh -lc 'exec "$0" "$@"' <args…>  — arguments are passed untouched (Chinese paths, spaces …)
-    func zsh(_ args: [String]) -> Process {
+    func zsh(_ args: [String], env: [String: String] = [:]) -> Process {
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/bin/zsh")
         p.arguments = ["-lc", "exec \"$0\" \"$@\""] + args
         p.currentDirectoryURL = URL(fileURLWithPath: NSHomeDirectory())
+        if !env.isEmpty { p.environment = ProcessInfo.processInfo.environment.merging(env) { $1 } }  // secrets via env, never argv
         return p
     }
 
@@ -75,7 +166,9 @@ final class Runner: ObservableObject {
             DispatchQueue.main.async {
                 if let j = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
                     self.deps = j
-                    if (j["codex"] as? String ?? "").isEmpty && !(j["claude"] as? String ?? "").isEmpty { self.backend = "claude" }
+                    let noCodex = (j["codex"] as? String ?? "").isEmpty, noClaude = (j["claude"] as? String ?? "").isEmpty
+                    if self.backend == "codex" && noCodex { self.backend = noClaude ? "api" : "claude" }
+                    if self.backend == "claude" && noClaude { self.backend = noCodex ? "api" : "codex" }
                 } else {
                     self.deps = [:]
                     self.depsError = e.contains("not found") || e.contains("找不到") || e.isEmpty
@@ -93,7 +186,8 @@ final class Runner: ObservableObject {
         if !(deps["python_ok"] as? Bool ?? false) { m.append("Python 3.9+") }
         if (deps["ffmpeg"] as? String ?? "").isEmpty || (deps["ffprobe"] as? String ?? "").isEmpty { m.append("ffmpeg") }
         if !(deps["pillow"] as? Bool ?? false) { m.append("Pillow") }
-        if (deps["codex"] as? String ?? "").isEmpty && (deps["claude"] as? String ?? "").isEmpty { m.append("Codex 或 Claude Code") }
+        if backend == "codex" && (deps["codex"] as? String ?? "").isEmpty { m.append("Codex") }
+        if backend == "claude" && (deps["claude"] as? String ?? "").isEmpty { m.append("Claude Code") }
         return m
     }
 
@@ -122,6 +216,13 @@ final class Runner: ObservableObject {
 
     func start() {
         guard !running, !src.isEmpty, !out.isEmpty else { return }
+        if backend == "api" {
+            if apiBase.isEmpty || apiModel.isEmpty || apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                finalMessage = "用国产大模型要先填好接口地址、模型和 API Key"
+                return
+            }
+            saveProvider()
+        }
         for (k, v) in [("src", src), ("out", out), ("event", event), ("backend", backend), ("effort", effort), ("organize", organize)] {
             UserDefaults.standard.set(v, forKey: k)
         }
@@ -131,8 +232,10 @@ final class Runner: ObservableObject {
         finalMessage = ""
         log = []
         running = true
+        let apiArgs = backend == "api" ? ["--api-base", apiBase, "--api-model", apiModel, "--api-provider", provider] : []
         let p = zsh(["python3", engine + "/run_all.py", "--src", src, "--out", out, "--event", event.isEmpty ? URL(fileURLWithPath: src).lastPathComponent : event,
-                     "--backend", backend, "--effort", effort, "--organize", organize] + (makeFCP ? [] : ["--no-fcp"]))
+                     "--backend", backend, "--effort", effort, "--organize", organize] + apiArgs + (makeFCP ? [] : ["--no-fcp"]),
+                    env: backend == "api" ? ["FOOTAGE_API_KEY": apiKey.trimmingCharacters(in: .whitespacesAndNewlines)] : [:])
         let pipe = Pipe(), err = Pipe()
         p.standardOutput = pipe
         p.standardError = err
@@ -267,7 +370,8 @@ struct ContentView: View {
                             Picker("", selection: $r.backend) {
                                 Text("Codex").tag("codex")
                                 Text("Claude Code").tag("claude")
-                            }.pickerStyle(.segmented).frame(width: 220).labelsHidden()
+                                Text("国产大模型").tag("api")
+                            }.pickerStyle(.segmented).frame(width: 330).labelsHidden()
                             if r.backend == "codex" {
                                 Picker("推理强度", selection: $r.effort) {
                                     Text("低").tag("low")
@@ -278,6 +382,43 @@ struct ContentView: View {
                             Spacer()
                         }
                         Text("")
+                    }
+                    if r.backend == "api" {
+                        GridRow {
+                            Text("服务商")
+                            HStack {
+                                Picker("", selection: $r.provider) {
+                                    ForEach(Provider.all) { Text($0.name).tag($0.id) }
+                                }.frame(width: 240).labelsHidden()
+                                if let u = URL(string: r.currentProvider.keyURL), !r.currentProvider.keyURL.isEmpty {
+                                    Link("去申请 API Key", destination: u).font(.callout)
+                                }
+                                Spacer()
+                            }
+                            Text("")
+                        }
+                        GridRow {
+                            Text("接口地址")
+                            TextField("OpenAI 兼容接口地址，例如 https://…/v1", text: $r.apiBase).accessibilityLabel("接口地址")
+                            Text("")
+                        }
+                        GridRow {
+                            Text("模型")
+                            TextField("必须是能看图的模型", text: $r.apiModel).accessibilityLabel("模型")
+                            Text("")
+                        }
+                        GridRow {
+                            Text("API Key")
+                            SecureField("只保存在这台 Mac 的钥匙串里", text: $r.apiKey).accessibilityLabel("API Key")
+                            Button("测试连接") { r.testConnection() }.disabled(r.testing || r.apiKey.isEmpty)
+                        }
+                        if !r.testMessage.isEmpty {
+                            GridRow {
+                                Text("")
+                                Text(r.testMessage).font(.callout).textSelection(.enabled)
+                                Text("")
+                            }
+                        }
                     }
                 }.padding(6)
             }
@@ -306,7 +447,7 @@ struct ContentView: View {
                     .disabled(r.running || r.src.isEmpty || r.out.isEmpty || !r.depsChecked || !r.missing.isEmpty)
                 Button("停止") { r.stop() }.disabled(!r.running)
                 Spacer()
-                Text("AI 分类会用你自己的 Codex / Claude 额度。实测 27 条约 1 分半钟。").font(.caption).foregroundStyle(.secondary)
+                Text("AI 分类用你自己的 Codex / Claude 额度，或国产大模型的 API 费用。实测 27 条约 1 分半钟。").font(.caption).foregroundStyle(.secondary)
             }
             GroupBox {
                 VStack(alignment: .leading, spacing: 8) {

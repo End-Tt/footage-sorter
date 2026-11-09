@@ -7,7 +7,7 @@
 - **表格**：每条素材一行（场景、光线、景别、运镜、人物、技术问题、0–3 分评分、风格、用途、重复组、描述）。
 - **Final Cut Pro（可选）**：导入后关键词按类别分进文件夹，精选标收藏，废片标拒绝。
 
-原素材只读，不移动、不改名、不转码。所有处理都在你自己的电脑上进行，AI 分类走你自己的 Codex（ChatGPT 账号）或 Claude Code。
+原素材只读，不移动、不改名、不转码。所有处理都在你自己的电脑上进行，AI 分类走你自己的 Codex（ChatGPT 账号）、Claude Code，或者**国产大模型的 API**（通义千问、豆包、智谱、DeepSeek、Kimi、硅基流动，或任何 OpenAI 兼容、能看图的接口）。
 
 ## 三种用法
 
@@ -36,7 +36,7 @@ codex plugin add footage-sorter@sucai-tools
 ## 需要什么
 
 - macOS 13 或更新（Apple 芯片、Intel 都行）
-- Codex（命令行版或 ChatGPT / Codex 桌面版都行）或 Claude Code，已登录
+- 三选一：Codex（命令行版或 ChatGPT / Codex 桌面版都行）、Claude Code（已登录），或国产大模型的 API Key（在程序里选「国产大模型」，详见使用说明）
 - Python 3、ffmpeg（`brew install ffmpeg`）、Pillow（`python3 -m pip install --user pillow`）。程序会自动检查，缺什么会提示。
 
 详细说明见 [使用说明.md](使用说明.md)。

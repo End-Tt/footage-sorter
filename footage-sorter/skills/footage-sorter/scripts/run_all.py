@@ -26,7 +26,10 @@ ap.add_argument("--src", nargs="+", required=True)
 ap.add_argument("--out", required=True)
 ap.add_argument("--event", default="")
 ap.add_argument("--title", default="")
-ap.add_argument("--backend", choices=["codex", "claude"], default="codex")
+ap.add_argument("--backend", choices=["codex", "claude", "api"], default="codex")
+ap.add_argument("--api-base", default="")
+ap.add_argument("--api-model", default="")
+ap.add_argument("--api-provider", default="")
 ap.add_argument("--effort", default="medium")
 ap.add_argument("--exclude", action="append", default=[])
 ap.add_argument("--organize", choices=["copy", "link", "none"], default="copy",
@@ -111,9 +114,11 @@ rc, out, err = run("brief", "make_brief.py", "--work", WORK)
 if rc:
     fail("brief", err.strip()[-300:])
 
-rc, out, err = run("classify", "classify.py", "--work", WORK, "--backend", args.backend, "--effort", args.effort)
+api = ["--api-base", args.api_base, "--api-model", args.api_model, "--api-provider", args.api_provider] if args.backend == "api" else []
+rc, out, err = run("classify", "classify.py", "--work", WORK, "--backend", args.backend, "--effort", args.effort, *api)
 if rc == 2:
-    fail("classify", err.strip()[-300:] or f"找不到 {args.backend}")
+    msgs = [json.loads(l).get("error") for l in out.splitlines() if l.startswith("{")]
+    fail("classify", next((m for m in reversed(msgs) if m), None) or err.strip()[-300:] or f"找不到 {args.backend}")
 
 rc, out, err = run("check", "check.py", "--work", WORK)
 c = last_json(out)
