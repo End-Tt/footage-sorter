@@ -11,7 +11,7 @@
 
 ## 三种用法
 
-**1. 桌面程序（最简单）**：到 [Releases](https://github.com/End-Tt/footage-sorter/releases) 下载 `素材分类-版本号-macOS.zip`，解压后把「素材分类.app」拖进「应用程序」。选文件夹 → 开始整理，就这么简单。第一次打开如果被系统拦住，去 **系统设置 › 隐私与安全性** 点「仍要打开」。
+**1. 桌面程序（最简单）**：到 [Releases](https://github.com/End-Tt/footage-sorter/releases) 下载 `footage-sorter-版本号-macOS.zip`，解压后把「素材分类.app」拖进「应用程序」。选文件夹 → 开始整理，就这么简单。第一次打开如果被系统拦住，去 **系统设置 › 隐私与安全性** 点「仍要打开」。
 
 **2. Codex 插件**（在终端运行）：
 
