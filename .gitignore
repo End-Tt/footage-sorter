@@ -1,0 +1,7 @@
+# 程序本体放 GitHub Releases，不进代码库
+*.app
+build/
+*.zip
+.DS_Store
+__pycache__/
+*.pyc

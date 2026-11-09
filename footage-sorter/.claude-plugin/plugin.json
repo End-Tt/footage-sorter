@@ -1,0 +1,6 @@
+{
+  "name": "footage-sorter",
+  "version": "1.0.0",
+  "description": "视频素材自动分类：AI 看缩略图给每条素材打场景/光线/景别/运镜/评分等标签，输出离线目录网页、CSV 和带关键词文件夹的 Final Cut Pro XML。原素材只读不动。",
+  "keywords": ["video", "footage", "final-cut-pro", "fcpxml", "素材分类"]
+}

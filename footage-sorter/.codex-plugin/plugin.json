@@ -1,0 +1,24 @@
+{
+  "name": "footage-sorter",
+  "version": "1.0.0",
+  "description": "视频素材自动分类：AI 看缩略图给每条素材打场景/光线/景别/运镜/评分等标签，输出离线目录网页、CSV 和带关键词文件夹的 Final Cut Pro XML。原素材只读不动。",
+  "keywords": ["video", "footage", "final cut pro", "fcpxml", "素材分类"],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "素材分类",
+    "shortDescription": "AI 看图给视频素材分类，导出目录网页、表格和 FCP 关键词",
+    "longDescription": "扫描一个文件夹里的视频，每条抽 6 帧拼成联系表，让 AI 按固定词表打标签（场景、光线、景别、运镜、人物、技术问题、0-3 分评分、风格、用途、重复组、一句话描述），按日期和行程分地点，输出能筛选的离线目录网页、CSV 表格，以及导入 Final Cut Pro 后关键词按文件夹分好、精选标收藏、废片标拒绝的 FCPXML。原素材只读，不移动不修改。",
+    "developerName": "素材分类",
+    "category": "Productivity",
+    "capabilities": ["Interactive", "Write"],
+    "defaultPrompt": [
+      "用素材分类技能，把 ~/Movies/我的旅行素材 里的素材分类",
+      "给这个文件夹的视频素材打标签，导出 FCP 能用的关键词",
+      "筛一下这批素材里哪些能用，做个素材目录"
+    ],
+    "brandColor": "#1F5F8B",
+    "composerIcon": "./assets/icon.svg",
+    "logo": "./assets/icon.svg",
+    "screenshots": []
+  }
+}

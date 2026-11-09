@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>__TITLE__</title>
+<style>
+/* A contact-sheet light table: neutral ink, one blue accent, amber for picks. */
+:root {
+  --bg: #f1f3f5; --panel: #ffffff; --line: #d8dde3; --fg: #15191e; --muted: #5d6673;
+  --accent: #1f5f8b; --accent-ink: #ffffff; --pick: #b86e00; --bad: #b3261e; --chip: #e6ebf0;
+  --body: -apple-system, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+  --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root { --bg: #0e1215; --panel: #161b20; --line: #2a323a; --fg: #e4e8ec; --muted: #8b96a3;
+          --accent: #6fb1e0; --accent-ink: #0e1215; --pick: #f2a93b; --bad: #ff7a70; --chip: #212a32; color-scheme: dark; }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--fg); font: 14px/1.6 var(--body); }
+header { padding: 28px 16px 8px; max-width: 1500px; margin: 0 auto; display: grid; gap: 10px; }
+h1 { margin: 0; font-size: 28px; letter-spacing: .02em; }
+.sub { color: var(--muted); max-width: 80ch; margin: 0; }
+.stats { display: flex; flex-wrap: wrap; gap: 8px 22px; font-size: 13px; color: var(--muted); }
+.stats b { color: var(--fg); font-family: var(--mono); font-size: 18px; font-weight: 600; margin-right: 4px; }
+.bar { position: sticky; top: 0; z-index: 5; background: var(--bg); border-bottom: 1px solid var(--line); }
+.bar-in { max-width: 1500px; margin: 0 auto; padding: 10px 16px; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+select, input[type=search] { font: inherit; color: var(--fg); background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 5px 8px; max-width: 100%; }
+input[type=search] { min-width: 180px; flex: 1 1 200px; }
+label.chk { display: inline-flex; gap: 5px; align-items: center; font-size: 13px; color: var(--muted); }
+.count { font-size: 13px; color: var(--muted); margin-left: auto; font-variant-numeric: tabular-nums; }
+main { max-width: 1500px; margin: 0 auto; padding: 12px 16px 60px; }
+.group h2 { font-size: 16px; margin: 26px 0 10px; padding-bottom: 6px; border-bottom: 2px solid var(--fg); display: flex; gap: 12px; align-items: baseline; flex-wrap: wrap; }
+.group h2 span { font-size: 12px; color: var(--muted); font-weight: 400; }
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(420px, 100%), 1fr)); gap: 12px; }
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; overflow: hidden; display: grid; }
+.card.r3 { border-color: var(--pick); box-shadow: inset 3px 0 0 var(--pick); }
+.card.r0 { opacity: .55; }
+.card img { width: 100%; display: block; aspect-ratio: 1296 / 120; object-fit: cover; background: #000; }
+.meta { padding: 8px 10px 10px; display: grid; gap: 5px; }
+.row1 { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; }
+.id { font-family: var(--mono); font-weight: 600; }
+.stars { color: var(--pick); letter-spacing: 1px; }
+.dim { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.desc { font-size: 14px; }
+.tags { display: flex; flex-wrap: wrap; gap: 4px; }
+.tag { font-size: 11.5px; background: var(--chip); border-radius: 3px; padding: 0 6px; color: var(--muted); }
+.tag.role { background: var(--accent); color: var(--accent-ink); }
+.tag.q { color: var(--bad); }
+.acts { display: flex; gap: 12px; font-size: 12px; align-items: center; flex-wrap: wrap; }
+.acts a, .acts button { color: var(--accent); background: none; border: 0; padding: 0; font: inherit; cursor: pointer; text-decoration: underline; }
+.note { font-size: 12px; color: var(--muted); }
+details.extra { max-width: 1500px; margin: 0 auto; padding: 0 16px 40px; }
+details.extra summary { cursor: pointer; font-weight: 600; }
+details.extra li { font-family: var(--mono); font-size: 12px; overflow-wrap: anywhere; }
+</style>
+</head>
+<body>
+<header>
+  <h1>__TITLE__</h1>
+  <p class="sub">每条素材一行六帧缩略图。评分 ★★★ 精选、★★ 可用、★ 凑合、✕ 废片。原文件一个都没动过；点「播放」用浏览器打开原视频，点「复制路径」拿到文件位置。</p>
+  <div class="stats" id="stats"></div>
+</header>
+<div class="bar"><div class="bar-in">
+  <input type="search" id="q" placeholder="搜索描述、地标、编号、文件名…">
+  <select id="f-place"><option value="">全部地点</option></select>
+  <select id="f-scene"><option value="">全部场景</option></select>
+  <select id="f-role"><option value="">全部用途</option></select>
+  <select id="f-rating"><option value="">全部评分</option><option value="3">只看 ★★★</option><option value="2+">★★ 以上</option><option value="0">只看废片</option></select>
+  <select id="f-group"><option value="place">按地点分组</option><option value="date">按日期分组</option><option value="scene">按场景分组</option><option value="role">按用途分组</option><option value="folder">按文件夹分组</option></select>
+  <label class="chk"><input type="checkbox" id="f-noportrait"> 隐藏竖拍</label>
+  <span class="count" id="count"></span>
+</div></div>
+<main id="list"></main>
+<details class="extra"><summary id="bad-sum"></summary><ul id="bad"></ul></details>
+<script>
+const DATA = __DATA__;
+const C = DATA.clips;
+const $ = s => document.querySelector(s);
+const uniq = arr => [...new Set(arr.filter(Boolean))];
+const hasPlace = C.some(c => c.place);
+if (!hasPlace) { $("#f-place").hidden = true; $("#f-group").value = "date"; $("#f-group").options[0].remove(); }
+uniq(C.map(c => c.place)).sort().forEach(v => $("#f-place").add(new Option(v, v)));
+uniq(C.map(c => c.scene)).sort().forEach(v => $("#f-scene").add(new Option(v, v)));
+uniq(C.map(c => c.role)).sort().forEach(v => $("#f-role").add(new Option(v, v)));
+const mins = Math.round(C.reduce((s, c) => s + (c.duration || 0), 0) / 60);
+const cnt = k => C.filter(c => c.rating === k).length;
+$("#stats").innerHTML = `<span><b>${C.length}</b>条</span><span><b>${mins}</b>分钟</span><span><b>${cnt(3)}</b>精选</span><span><b>${cnt(2)}</b>可用</span><span><b>${cnt(1)}</b>凑合</span><span><b>${cnt(0)}</b>废片</span>`;
+const stars = r => r === 0 ? "✕" : r == null ? "?" : "★".repeat(r);
+const esc = s => String(s ?? "").replace(/[&<>"]/g, ch => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[ch]));
+const SKIP = new Set(["不确定", "无", ""]);
+function card(c) {
+  let tags = "";
+  for (const d of DATA.dims) {
+    if (d.key === "role") continue;
+    const vals = (Array.isArray(c[d.key]) ? c[d.key] : [c[d.key]]).filter(v => v && !SKIP.has(v));
+    tags += vals.map(v => `<span class="tag${d.key === "quality" ? " q" : ""}" title="${esc(d.label)}">${esc(v)}</span>`).join("");
+  }
+  const role = c.role && !["不适合", "不确定"].includes(c.role) ? `<span class="tag role" title="用途">${esc(c.role)}</span>` : "";
+  return `<article class="card r${c.rating}">
+    <img loading="lazy" src="thumbs/${esc(c.id)}.jpg" alt="${esc(c.id)} 六帧缩略图">
+    <div class="meta">
+      <div class="row1"><span class="id">${esc(c.id)}</span><span class="stars">${stars(c.rating)}</span>
+        <span class="dim">${esc(c.date || "日期未知")} · ${(c.duration || 0).toFixed(1)} 秒 · ${esc(c.folder)}${c.portrait ? " · 竖拍" : ""}</span></div>
+      <div class="desc">${esc(c.desc)}</div>
+      <div class="tags">${role}${tags}</div>
+      ${c.place_hint ? `<div class="note">地标：${esc(c.place_hint)}</div>` : ""}
+      ${c.note ? `<div class="note">${esc(c.note)}</div>` : ""}
+      <div class="acts"><a href="file://${encodeURI(c.path)}">播放</a><button type="button" data-p="${esc(c.path)}">复制路径</button><span class="dim">${esc(c.rel)}</span>${c.dup_group ? `<span class="dim">重复组 ${esc(c.dup_group)}</span>` : ""}</div>
+    </div></article>`;
+}
+function render() {
+  const q = $("#q").value.trim().toLowerCase(), pl = $("#f-place").value, sc = $("#f-scene").value, role = $("#f-role").value,
+        rt = $("#f-rating").value, grp = $("#f-group").value, np = $("#f-noportrait").checked;
+  const list = C.filter(c => (!pl || c.place === pl) && (!sc || c.scene === sc || c.scene2 === sc) && (!role || c.role === role)
+    && (!rt || (rt === "2+" ? c.rating >= 2 : c.rating === +rt)) && (!np || !c.portrait)
+    && (!q || [c.id, c.desc, c.place_hint, c.note, c.rel, c.scene, c.place].join(" ").toLowerCase().includes(q)));
+  const key = c => grp === "date" ? (c.date || "日期未知") : grp === "scene" ? (c.scene || "未分类") : grp === "role" ? (c.role || "未分类")
+    : grp === "folder" ? c.folder : (c.place || "地点待定");
+  const groups = {};
+  list.forEach(c => (groups[key(c)] ||= []).push(c));
+  const firstDate = n => (groups[n].map(c => c.date || "9999").sort()[0]);
+  const names = Object.keys(groups).sort(grp === "place" ? (a, b) => firstDate(a).localeCompare(firstDate(b)) : undefined);
+  $("#list").innerHTML = names.map(n => {
+    const g = groups[n].sort((a, b) => (b.rating ?? -1) - (a.rating ?? -1) || a.id.localeCompare(b.id));
+    return `<section class="group"><h2>${esc(n)}<span>${g.length} 条 · ${Math.round(g.reduce((s, c) => s + (c.duration || 0), 0) / 60)} 分钟 · ★★★ ${g.filter(c => c.rating === 3).length}</span></h2><div class="grid">${g.map(card).join("")}</div></section>`;
+  }).join("") || "<p>没有符合条件的素材。</p>";
+  $("#count").textContent = `显示 ${list.length} / ${C.length} 条`;
+}
+["#q", "#f-place", "#f-scene", "#f-role", "#f-rating", "#f-group", "#f-noportrait"].forEach(s => $(s).addEventListener("input", render));
+$("#list").addEventListener("click", e => {
+  const b = e.target.closest("button[data-p]"); if (!b) return;
+  navigator.clipboard?.writeText(b.dataset.p).then(() => { b.textContent = "已复制"; setTimeout(() => b.textContent = "复制路径", 1200); }).catch(() => {});
+});
+$("#bad-sum").textContent = `坏文件和重复副本 ${DATA.other.length} 个（详见「坏文件与重复副本.csv」）`;
+$("#bad").innerHTML = DATA.other.map(b => `<li>${esc(b.kind)}　${esc(b.rel)}</li>`).join("");
+if (!DATA.other.length) $(".extra").hidden = true;
+render();
+</script>
+</body>
+</html>

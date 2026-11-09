@@ -1,0 +1,14 @@
+{
+  "name": "sucai-tools",
+  "owner": {
+    "name": "素材分类"
+  },
+  "description": "视频素材整理工具",
+  "plugins": [
+    {
+      "name": "footage-sorter",
+      "source": "./footage-sorter",
+      "description": "视频素材自动分类：AI 看缩略图打标签，输出离线目录网页、CSV 和带关键词文件夹的 Final Cut Pro XML。"
+    }
+  ]
+}
