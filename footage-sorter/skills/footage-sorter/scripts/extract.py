@@ -2,7 +2,8 @@
 
 usage: extract.py --work WORK [--jobs 6] [--batch-size 100] [--only ID ...]
 
-Originals are only read (DJI .LRF proxies are used when present, much faster).
+Originals are only read (DJI .LRF proxies are used when present, much faster). Camera RAW originals without a
+proxy (scan.py field "preview") give one frame: the JPEG preview stored in the file; ffmpeg is not run on them.
 Resumable: clips whose strip already exists are not decoded again.
 Metrics written back into manifest.jsonl (0-255 scale, from 180p frames):
   brightness  mean luma          dark_ratio  share of pixels < 30
@@ -11,6 +12,7 @@ Metrics written back into manifest.jsonl (0-255 scale, from 180p frames):
   colorfulness  Hasler–Süsstrunk on the middle frame"""
 import argparse
 import glob
+import io
 import json
 import math
 import os
@@ -58,6 +60,19 @@ def ffmpeg_frames(src, outdir, duration):
                     "-q:v", "5", pat], capture_output=True, timeout=1800)
 
 
+def preview_frame(src, at, outdir):
+    """Camera RAW original without a proxy: its embedded JPEG preview ([offset, length], from scan.py) as the only
+    frame, 180 px high like the ffmpeg frames. ffmpeg is not used. Unreadable -> no frame (-> extract_error)."""
+    try:
+        with open(src, "rb") as f:
+            f.seek(at[0])
+            im = Image.open(io.BytesIO(f.read(at[1]))).convert("RGB")
+        im = im.resize((max(2, round(im.width * 180 / im.height / 2) * 2), 180), Image.BICUBIC)
+        im.save(os.path.join(outdir, "k_0001.jpg"), quality=90)
+    except Exception:
+        pass
+
+
 def colorfulness(im):
     px = list(im.resize((64, 36)).getdata())
     rg = [r - g for r, g, b in px]
@@ -79,7 +94,10 @@ def process(x):
         for f in glob.glob(os.path.join(d, "*.jpg")):
             os.remove(f)
     if not glob.glob(os.path.join(d, "*.jpg")):
-        ffmpeg_frames(x.get("proxy") or x["path"], d, x["duration"])
+        if x.get("preview"):
+            preview_frame(x["path"], x["preview"], d)
+        else:
+            ffmpeg_frames(x.get("proxy") or x["path"], d, x["duration"])
     frames = sorted(glob.glob(os.path.join(d, "*.jpg")))
     if not frames:
         x["extract_error"] = "解不出画面"
@@ -141,7 +159,8 @@ for s in range(0, len(clips), 10):
         dr.text((6, y + 4), x["id"], fill="yellow", font=F)
         dr.text((6, y + 24), x.get("date") or "日期未知", fill="white", font=F)
         dr.text((6, y + 44), f"{x['duration']:.0f}s {folder[:8]}", fill="white", font=F)
-        dr.text((6, y + 64), f"mot {x.get('motion')} br {x.get('brightness')}", fill=(150, 200, 255), font=F)
+        dr.text((6, y + 64), (f"RAW 只有1帧 br {x.get('brightness')}" if x.get("preview") else f"mot {x.get('motion')} br {x.get('brightness')}"),
+                fill=(150, 200, 255), font=F)
         dr.text((6, y + 84), f"sh {x.get('sharpness')}" + (" PORTRAIT" if x.get("portrait") else ""), fill=(150, 200, 255), font=F)
         sheet.paste(Image.open(os.path.join(P["strips"], x["id"] + ".jpg")), (200, y + 2))
     name = f"sheet_{s // 10 + 1:03d}.jpg"

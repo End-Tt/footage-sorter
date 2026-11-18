@@ -19,6 +19,7 @@ import re
 import shutil
 import subprocess
 import sys
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -26,7 +27,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 sys.dont_write_bytecode = True  # no __pycache__ inside the installed skill folder
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from common import UNSURE, find_cli, load_vocab, read_jsonl, work_paths  # noqa: E402
+from common import UNSURE, cli_candidates, find_cli, load_vocab, read_jsonl, work_paths  # noqa: E402
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ap = argparse.ArgumentParser()
@@ -259,6 +260,20 @@ exe = "api" if API else find_cli(args.backend)
 if not exe:
     emit(error=f"找不到 {args.backend} 命令。请先安装并登录 {'Codex' if args.backend == 'codex' else 'Claude Code'}。")
     sys.exit(2)
+codex_exes = cli_candidates("codex") if args.backend == "codex" else []  # all installs: an outdated one may not know the default model
+codex_lock = threading.Lock()
+
+
+def codex_exe(drop=None):
+    """The codex to call; drop = an install that just answered model_not_found, so every thread moves on to the next one."""
+    with codex_lock:
+        if drop in codex_exes:
+            codex_exes.remove(drop)
+            if codex_exes:
+                emit(message=f"这个 Codex 用不了账号当前的默认模型（多半是版本太旧）：{drop}，改用 {codex_exes[0]}")
+        return codex_exes[0] if codex_exes else ""
+
+
 brief = open(os.path.join(P["work"], "brief_exec.md"), encoding="utf-8").read()
 schema_path = os.path.join(P["work"], "schema.json")
 SCHEMA = json.load(open(schema_path, encoding="utf-8")) if os.path.exists(schema_path) else None
@@ -289,12 +304,22 @@ def call(group, extra=""):
             return name, ids, [], str(e)
         r = None
     elif args.backend == "codex":
-        cmd = [exe, "exec", "--skip-git-repo-check", "--ephemeral", "-s", "read-only", "-C", P["work"],
-               "-c", f'model_reasoning_effort="{args.effort}"', "--output-schema", schema_path, "-o", out]
-        for s in group:
-            cmd += ["-i", s]
-        r = subprocess.run(cmd, input=prompt, capture_output=True, text=True, timeout=args.timeout)
-        text = open(out, encoding="utf-8").read() if os.path.exists(out) else ""
+        cur, said = codex_exe(), ""
+        while True:
+            if not cur:
+                raise Fatal("这台电脑上的 Codex 用不了账号当前设置的默认模型，AI 分类做不了。请把 Codex 更新到最新版，或者在 Codex 里换一个模型，"
+                            "再点一次「开始整理」" + (f"（Codex 的原话：{said}）" if said else ""))
+            cmd = [cur, "exec", "--skip-git-repo-check", "--ephemeral", "-s", "read-only", "-C", P["work"],
+                   "-c", f'model_reasoning_effort="{args.effort}"', "--output-schema", schema_path, "-o", out]
+            for s in group:
+                cmd += ["-i", s]
+            r = subprocess.run(cmd, input=prompt, capture_output=True, text=True, timeout=args.timeout)
+            text = open(out, encoding="utf-8").read() if os.path.exists(out) else ""
+            if text.strip() or "model_not_found" not in r.stderr + r.stdout:
+                break
+            m = re.search(r'"message":"([^"]+)"', r.stderr + r.stdout)
+            said = m.group(1) if m else said
+            cur = codex_exe(drop=cur)  # this install cannot use the account's default model (usually outdated): next one
     else:
         prompt += "\n联系表图片路径（用 Read 工具打开）：\n" + "\n".join(group) + "\n"
         cmd = [exe, "-p", "--output-format", "json", "--json-schema", open(schema_path, encoding="utf-8").read(),

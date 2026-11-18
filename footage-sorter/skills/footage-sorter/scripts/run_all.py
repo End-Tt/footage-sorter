@@ -97,10 +97,16 @@ rc, out, err = run("scan", "scan.py", *args.src, "--work", WORK, *ex, progress=r
 if rc:
     fail("scan", err.strip()[-300:] or "扫描失败")
 s = last_json(out)
-emit(stage="scan", message=f"找到 {s.get('视频总数', '?')} 个视频，可分类 {s.get('可分类', '?')} 条，坏文件 {s.get('坏文件', 0)} 个，"
-                           f"重复副本 {s.get('重复副本（已跳过）', 0)} 个，共 {s.get('总时长（分钟）', '?')} 分钟", summary=s)
+rw = s.get("RAW 原片") or {}
+rp, ru, rv = rw.get("有同名代理", 0), rw.get("没有能用的同名代理", 0), rw.get("按内嵌预览图分类", 0)
+raw_msg = (f"；另有 RAW 原片 {rp + ru + rv} 个：" + "，".join(([f"{rp} 个有同名代理（跟着代理一起整理）"] if rp else [])
+                                                      + ([f"{rv} 个没有能用的同名代理、按文件里自带的预览图分类（只看开头一帧）"] if rv else [])
+                                                      + ([f"{ru} 个没有能用的同名代理、也读不出预览图（没法分类）"] if ru else []))) if rw else ""
+emit(stage="scan", message=f"找到 {s.get('视频总数', '?')} 个视频，可分类 {s.get('可分类', '?')} 条" + (f"（其中 {rv} 条是 RAW 原片）" if rv else "") + f"，坏文件 {s.get('坏文件', 0)} 个，"
+                           f"重复副本 {s.get('重复副本（已跳过）', 0)} 个，共 {s.get('总时长（分钟）', '?')} 分钟" + raw_msg, summary=s)
 if not s.get("可分类"):
-    fail("scan", "这个文件夹里没有能分类的视频")
+    fail("scan", f"这个文件夹里有 {ru} 个 RAW 原片（.R3D / .NEV），旁边没有能用的同名代理视频，文件里也读不出预览图；这台电脑解不出这类 RAW 的画面，没法分类"
+         if ru else "这个文件夹里没有能分类的视频")
 
 emit(stage="extract", message="抽帧、拼联系表…")
 rc, out, err = run("extract", "extract.py", "--work", WORK, progress=r"抽帧 (\d+)/(\d+)")
@@ -131,14 +137,28 @@ if rc:
     fail("build", err.strip()[-300:] or "生成失败")
 b = last_json(out)
 organized = ""
+o = []
 if args.organize != "none":
     rc, out, err = run("organize", "organize.py", "--work", WORK, "--dest", os.path.join(OUT, "整理好的素材"), "--mode", args.organize)
     o = [json.loads(l) for l in out.splitlines() if l.startswith("{")]
-    if rc == 2:
-        fail("organize", (o[-1].get("error") if o else "") or err.strip()[-300:])
+    if rc == 2 or (rc and not (o and "dest" in o[-1])):  # stopped on purpose, or died before its closing line
+        fail("organize", (o[-1].get("error") if o else "") or "整理文件夹这一步中途出错了：" + (err.strip().splitlines() or ["原因不明"])[-1][-300:])
     organized = os.path.join(OUT, "整理好的素材")
 r = b.get("评分", {})
 parts = [f"{lab} {r.get(k, 0)}" for k, lab in (("3", "精选"), ("2", "可用"), ("1", "凑合"), ("0", "废片")) if r.get(k)]
-emit(stage="done", message=f"完成：{b.get('条数', '?')} 条（{'、'.join(parts)}）" + (f"，{b['未分类']} 条没分出来" if b.get("未分类") else ""), out=OUT,
+from_org = args.organize != "none" and bool(o) and "unread" in o[-1]  # only then do we know the folder was really made
+n_unread = o[-1]["unread"] if from_org else len(e.get("解不出画面") or [])
+unread = (f"，{n_unread} 条解不出画面、没分类" + ("（在「⚠ 解不出画面（没分类）」文件夹）" if from_org else "")) \
+    if n_unread else ""
+n_raw = o[-1].get("companions", 0) if args.organize != "none" and o else 0
+raws = f"，{n_raw} 个 RAW 原片和同名代理放在一起" if n_raw else ""
+n_single = b.get("按预览图分类的 RAW 原片", 0)  # from build, so it is there with --organize none too
+raws += f"，{n_single} 条 RAW 原片按自带预览图分类（只看了开头一帧）" if n_single else ""
+n_nofcp = b.get("FCP 未收录的 RAW 原片", 0)  # only when an FCP file was asked for
+if n_nofcp:
+    raws += f"，FCP 文件里不含这 {n_nofcp} 条 RAW 原片" if b.get("fcpxml") else "，没有生成 FCP 文件（这些 RAW 原片放不进 FCP 文件）"
+n_failed = o[-1].get("failed_count", 0) if args.organize != "none" and o else 0
+unread += f"，有 {n_failed} 个文件没复制成功（原因见日志）" if n_failed else ""
+emit(stage="done", message=f"完成：{b.get('条数', '?')} 条（{'、'.join(parts)}）" + (f"，{b['未分类']} 条没分出来" if b.get("未分类") else "") + raws + unread, out=OUT,
      index=os.path.join(OUT, "index.html"), csv=os.path.join(OUT, "素材清单.csv"), fcpxml=b.get("fcpxml", ""), organized=organized,
      unclassified=b.get("未分类", 0))

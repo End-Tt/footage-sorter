@@ -96,12 +96,11 @@ def need(tool):
         sys.exit(f"缺少 {tool}：请先安装 ffmpeg（macOS: brew install ffmpeg），再重新运行。")
 
 
-def find_cli(name):
-    """codex / claude: PATH first, then the usual install places a Finder-launched app's PATH misses (nvm, npm -g, …)."""
+def cli_candidates(name):
+    """Every codex / claude install found: PATH first, then the usual install places a Finder-launched app's PATH misses
+    (nvm, npm -g, …). The same binary reached by two routes is listed once."""
     import glob as _glob
-    hit = shutil.which(name)
-    if hit:
-        return hit
+    hits = [shutil.which(name) or ""]
     home = os.path.expanduser("~")
     pats = [f"{home}/.nvm/versions/node/*/bin/{name}", f"{home}/.npm-global/bin/{name}", f"{home}/.local/bin/{name}",
             f"{home}/.volta/bin/{name}", f"{home}/.bun/bin/{name}", f"{home}/Library/pnpm/{name}", f"/opt/homebrew/bin/{name}",
@@ -111,10 +110,19 @@ def find_cli(name):
                  f"{home}/Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex",
                  "/Applications/Codex.app/Contents/Resources/codex-cli/bin/codex"]
     for p in pats:
-        for f in sorted(_glob.glob(p), reverse=True):
-            if os.access(f, os.X_OK):
-                return f
-    return ""
+        hits += [f for f in sorted(_glob.glob(p), reverse=True) if os.access(f, os.X_OK)]
+    out, seen = [], set()
+    for f in hits:
+        if f and os.path.realpath(f) not in seen:
+            seen.add(os.path.realpath(f))
+            out.append(f)
+    return out
+
+
+def find_cli(name):
+    """codex / claude: the first install found (see cli_candidates), or ""."""
+    c = cli_candidates(name)
+    return c[0] if c else ""
 
 
 def augment_path():

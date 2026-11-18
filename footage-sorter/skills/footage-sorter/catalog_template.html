@@ -106,7 +106,7 @@ function card(c) {
       <div class="tags">${role}${tags}</div>
       ${c.place_hint ? `<div class="note">地标：${esc(c.place_hint)}</div>` : ""}
       ${c.note ? `<div class="note">${esc(c.note)}</div>` : ""}
-      <div class="acts"><a href="file://${encodeURI(c.path)}">播放</a><button type="button" data-p="${esc(c.path)}">复制路径</button><span class="dim">${esc(c.rel)}</span>${c.dup_group ? `<span class="dim">重复组 ${esc(c.dup_group)}</span>` : ""}</div>
+      <div class="acts">${c.raw ? "" : `<a href="file://${encodeURI(c.path)}">播放</a>`}<button type="button" data-p="${esc(c.path)}">复制路径</button><span class="dim">${esc(c.rel)}</span>${c.dup_group ? `<span class="dim">重复组 ${esc(c.dup_group)}</span>` : ""}${c.companions && c.companions.length ? `<span class="dim">另有 RAW 原片 ${c.companions.length} 个</span>` : ""}${c.raw ? `<span class="dim">RAW 原片 · 只看了开头一帧</span>` : ""}</div>
     </div></article>`;
 }
 function render() {

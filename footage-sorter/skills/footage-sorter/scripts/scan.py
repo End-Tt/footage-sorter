@@ -4,12 +4,17 @@ usage: scan.py FOLDER [FOLDER ...] --work WORK [--exclude TEXT ...] [--prefix C]
 
 For each file: duration, size, resolution, fps, rotation (portrait), timecode, camera model, GPS,
 shooting date (+ where the date came from), broken / duplicate-copy flags, DJI .LRF proxy.
+Camera RAW originals (.R3D / .NEV) are matched by file name to the video recorded with them (field "companions");
+their content is not read then. Unmatched ones get their own record: if the file is a QuickTime shell with a JPEG
+preview in moov/udta (Nikon R3D NE: NCDT/NCVW, 1920x1080), it is probed like a video and classified from that one
+picture (raw + preview); otherwise raw + broken, so they do not vanish.
 IDs (C0001 …) follow shooting date; re-running keeps the IDs already handed out."""
 import argparse
 import collections
 import json
 import os
 import re
+import struct
 import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor
@@ -19,6 +24,9 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from common import need, read_jsonl, work_paths, write_jsonl  # noqa: E402
 
 VIDEO_EXT = (".mp4", ".mov", ".m4v", ".mts", ".m2ts", ".avi", ".mkv", ".mxf", ".3gp")
+# camera RAW originals (RED R3D, Nikon N-RAW): ffmpeg cannot decode them; they ride along with the same-name file
+# the camera records at the same time. Without one, only the container header and an embedded preview JPEG are read.
+RAW_EXT = (".r3d", ".nev")
 # software that rewrites files on export: their container date is the export date, not the shooting date
 EDITOR_HINTS = ("davinci", "resolve", "premiere", "final cut", "compressor", "handbrake", "lavf", "capcut", "剪映", "imovie", "adobe")
 
@@ -34,28 +42,30 @@ P = work_paths(args.work)
 os.makedirs(P["work"], exist_ok=True)
 
 roots = [os.path.abspath(os.path.expanduser(f)) for f in args.folders]
-files = []
+files, raws = [], []
 for root in roots:
     if not os.path.isdir(root):
         sys.exit(f"找不到文件夹：{root}")
     for dp, dn, fn in os.walk(root):
         dn[:] = sorted(d for d in dn if not d.startswith(".") and not d.endswith((".fcpbundle", ".photoslibrary")))
         for f in sorted(fn):
-            if f.startswith((".", "._")) or not f.lower().endswith(VIDEO_EXT):
+            if f.startswith((".", "._")) or not f.lower().endswith(VIDEO_EXT + RAW_EXT):
                 continue
             p = os.path.join(dp, f)
             if any(e in p for e in args.exclude):
                 continue
-            files.append((root, p))
+            (raws if f.lower().endswith(RAW_EXT) else files).append((root, p))
 print(f"找到视频文件 {len(files)} 个", file=sys.stderr)
+
+
+def rel_of(root, p):
+    rel = os.path.relpath(p, root)
+    return os.path.join(os.path.basename(root), rel) if len(roots) > 1 else rel
 
 
 def probe(item):
     root, p = item
-    rel = os.path.relpath(p, root)
-    if len(roots) > 1:
-        rel = os.path.join(os.path.basename(root), rel)
-    rec = {"path": p, "rel": rel, "size": os.path.getsize(p)}
+    rec = {"path": p, "rel": rel_of(root, p), "size": os.path.getsize(p)}
     try:
         r = subprocess.run(["ffprobe", "-v", "error", "-print_format", "json", "-show_format", "-show_streams", p],
                            capture_output=True, text=True, timeout=180)
@@ -124,6 +134,49 @@ def shooting_date(r):
     return "", "未知"
 
 
+def raw_preview(path):
+    """[file offset, length] of the largest JPEG preview stored in moov/udta of a QuickTime-shell RAW file, or None.
+    Walks the atom headers with seek only (64-bit and to-end sizes); enters moov -> udta -> NCDT, never reads mdat,
+    skips leaves over 32 MB. Bad atom, too many atoms or any error -> None."""
+    try:
+        end = os.path.getsize(path)
+        with open(path, "rb") as f:
+            if f.read(8)[4:8] != b"ftyp":
+                return None
+            budget = [10000]  # atom headers left to read
+            best = []
+
+            def walk(start, stop, depth):  # depth 0 = file, 1 = moov, 2 = udta, 3 = NCDT
+                pos = start
+                while pos + 8 <= stop:
+                    budget[0] -= 1
+                    if budget[0] < 0:
+                        raise ValueError("too many atoms")
+                    f.seek(pos)
+                    n, kind = struct.unpack(">I4s", f.read(8))
+                    head = 8
+                    if n == 1:
+                        n, head = struct.unpack(">Q", f.read(8))[0], 16
+                    elif n == 0:
+                        n = stop - pos
+                    if n < head or pos + n > stop:
+                        raise ValueError("bad atom")
+                    body, size = pos + head, n - head
+                    if (depth, kind) in ((0, b"moov"), (1, b"udta"), (2, b"NCDT")):
+                        walk(body, pos + n, depth + 1)
+                    elif depth >= 2 and kind != b"mdat" and 3 < size <= 32 << 20:
+                        f.seek(body)
+                        data = f.read(size)
+                        i, j = data.find(b"\xff\xd8\xff", 0, 64), data.rfind(b"\xff\xd9")
+                        if 0 <= i < j:
+                            best.append([body + i, j + 2 - i])
+                    pos += n
+            walk(0, end, 0)
+        return max(best, key=lambda b: b[1]) if best else None
+    except Exception:
+        return None
+
+
 with ThreadPoolExecutor(args.jobs) as ex:
     recs = []
     for i, r in enumerate(ex.map(probe, files)):
@@ -139,6 +192,57 @@ for r in sorted(recs, key=lambda r: r["rel"]):
         r["duplicate_of"] = seen[k]
     else:
         seen.setdefault(k, r["path"])
+
+# RAW originals, by file name only: same folder + same name (any case) -> that video; else inside a RED .RDC folder
+# -> the folder's first video. Duplicate copy -> the kept one. No (readable) video -> own record, still listed
+# (classified from its embedded preview picture when it has one, see raw_preview).
+by_path = {r["path"]: r for r in recs}
+vids = collections.defaultdict(list)  # folder -> videos, file-name order
+for r in sorted(recs, key=lambda r: r["path"]):
+    vids[os.path.dirname(r["path"])].append(r)
+mates = collections.defaultdict(dict)  # kept video path -> {(name lower, size): RAW path}
+lone_items, copies = [], []
+for root, p in sorted(raws, key=lambda t: t[1]):
+    d, stem = os.path.dirname(p), os.path.splitext(os.path.basename(p))[0].lower()
+    same = [r for r in vids[d] if os.path.splitext(os.path.basename(r["path"]))[0].lower() == stem]
+    same.sort(key=lambda r: VIDEO_EXT.index(os.path.splitext(r["path"])[1].lower()))
+    cand = same + (vids[d] if os.path.basename(d).lower().endswith(".rdc") else [])
+    cand = [by_path.get(r["duplicate_of"]) if r.get("duplicate_of") else r for r in cand]
+    t = next((r for r in cand if r and not r["broken"]), None)  # first usable one
+    size = os.path.getsize(p)
+    first = mates[t["path"]].setdefault((os.path.basename(p).lower(), size), p) if t else None
+    if first == p:
+        continue
+    if not first:  # no usable same-name video: probed like a video below
+        lone_items.append((root, p))
+        continue
+    rec = {"path": p, "rel": rel_of(root, p), "size": size, "duration": 0, "broken": True, "raw": True,
+           "portrait": False, "proxy": None}
+    # same name and size as a RAW already riding with that clip: a copy; listed, not organized twice
+    rec["duplicate_of"] = first
+    rec["date"], rec["date_source"] = shooting_date(rec)
+    copies.append(rec)
+for vp, m in mates.items():
+    by_path[vp]["companions"] = sorted(m.values())
+with ThreadPoolExecutor(args.jobs) as ex:
+    lone = list(ex.map(probe, lone_items))
+for rec in lone:
+    rec["raw"] = True
+    pv = raw_preview(rec["path"])
+    if not rec["broken"] and pv:
+        rec["preview"] = pv  # classified from this one picture
+    else:
+        rec["broken"] = True  # no picture at all: listed, put into the ⚠ folder
+# exact copies (same name and size) among the classifiable ones, same rule as for videos; a RAW that already rides
+# with a proxy somewhere else counts as the kept one
+seen = {k: p for m in mates.values() for k, p in m.items()}
+for r in sorted(lone, key=lambda r: r["rel"]):
+    k = (os.path.basename(r["path"]).lower(), r["size"])
+    if k in seen and not r["broken"]:
+        r["duplicate_of"] = seen[k]
+    elif not r["broken"]:
+        seen.setdefault(k, r["path"])
+recs += lone + copies
 
 prev = {x["path"]: x for x in read_jsonl(P["manifest"]) if "id" in x}
 old = {p: x["id"] for p, x in prev.items()}
@@ -159,15 +263,21 @@ for r in recs:
 write_jsonl(P["manifest"], recs)
 
 ok = [r for r in recs if not r["broken"] and not r.get("duplicate_of")]
-print(json.dumps({
-    "视频总数": len(recs),
+vid = [r for r in recs if not r.get("raw")]
+stats = {
+    "视频总数": len(vid),
     "可分类": len(ok),
-    "坏文件": sum(r["broken"] for r in recs),
+    "坏文件": sum(r["broken"] for r in vid),
     "重复副本（已跳过）": sum(bool(r.get("duplicate_of")) for r in recs),
     "总时长（分钟）": round(sum(r["duration"] for r in ok) / 60, 1),
     "竖拍": sum(r["portrait"] for r in ok),
     "有 .LRF 代理": sum(bool(r["proxy"]) for r in ok),
     "日期来源": dict(collections.Counter(r["date_source"] for r in ok)),
     "每天条数": dict(sorted(collections.Counter(r["date"] or "未知" for r in ok).items())),
-    "manifest": P["manifest"],
-}, ensure_ascii=False, indent=1))
+}
+if raws:
+    stats["RAW 原片"] = {"有同名代理": sum(len(r.get("companions") or []) for r in recs),
+                       "没有能用的同名代理": sum(r["broken"] for r in lone),  # and no preview picture: cannot be classified
+                       "按内嵌预览图分类": sum(r.get("raw", False) for r in ok)}
+stats["manifest"] = P["manifest"]
+print(json.dumps(stats, ensure_ascii=False, indent=1))

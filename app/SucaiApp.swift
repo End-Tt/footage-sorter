@@ -348,9 +348,10 @@ struct ContentView: View {
                                 Text("只放替身").tag("link")
                                 Text("不整理").tag("none")
                             }.pickerStyle(.segmented).frame(width: 330).labelsHidden()
-                            Text(r.organize == "copy" ? "按场景分好，另有「精选」「废片」。和素材在同一块硬盘上时几乎不占空间"
+                            Text(r.organize == "copy" ? "按场景分好，另有「精选」「废片」。同一块 Mac 格式硬盘上几乎不占空间，否则是真复制（素材很大就选替身）"
                                  : r.organize == "link" ? "不占空间，但原素材以后不能挪位置" : "只出目录网页和表格")
                                 .font(.caption).foregroundStyle(.secondary)
+                                .lineLimit(2).fixedSize(horizontal: false, vertical: true)
                             Spacer()
                         }
                         Text("")

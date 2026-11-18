@@ -2,6 +2,8 @@
   index.html (offline catalog, open in a browser)   素材清单.csv (Excel/Numbers)   坏文件与重复副本.csv
   <event>.fcpxml (Final Cut Pro: 文件 › 导入 › XML…; keywords grouped into folders, ★3 = 个人收藏, 0 = 拒绝)
 Originals are never copied, moved or modified; FCP and the web page point at them where they are.
+Camera RAW originals classified from their embedded preview picture (field "raw") are listed on the web page and in
+the CSV but left out of the FCPXML (not sure FCP can read them); if there is nothing else, no FCPXML is written.
 
 usage: build.py --work WORK --out OUT [--event 素材分类] [--title "素材目录"] [--itinerary itinerary.json]
 
@@ -95,18 +97,36 @@ cols = [("编号", "id"), ("地点", "place"), ("地点依据", "place_src"), ("
         ("机型", "model"), ("竖拍", "portrait"), ("评分", "rating")] + [(d["label"], d["key"]) for d in DIMS] + \
        [("重复组", "dup_group"), ("地标线索", "place_hint"), ("描述", "desc"), ("备注", "note"), ("亮度", "brightness"),
         ("锐度", "sharpness"), ("画面变化", "motion"), ("色彩度", "colorfulness"), ("暗部比例", "dark_ratio"), ("完整路径", "path")]
+HAS_RAW = any(x.get("companions") for x in clips)  # extra column / key only when some clip has a RAW original
+if HAS_RAW:
+    cols.append(("同名 RAW 原片", "companions"))
+RAW1 = [x for x in clips if x.get("raw")]  # RAW originals classified from their one embedded preview picture
+if RAW1:
+    cols.append(("RAW 原片（只看了开头一帧）", "raw"))
 with open(os.path.join(OUT, "素材清单.csv"), "w", encoding="utf-8-sig", newline="") as f:
     w = csv.writer(f)
     w.writerow([c for c, _ in cols])
     for x in clips:
         w.writerow([cell(x.get(k)) for _, k in cols])
 other = [x for x in man if x.get("broken") or x.get("duplicate_of") or x.get("extract_error")]
+stranded = [(x, p) for x in other for p in x.get("companions") or []]  # RAW originals whose proxy gave no picture
+
+
+def raw_rel(x, p):
+    return os.path.join(os.path.dirname(x["rel"]), os.path.basename(p)) if os.path.dirname(p) == os.path.dirname(x["path"]) else p
+
+
 with open(os.path.join(OUT, "坏文件与重复副本.csv"), "w", encoding="utf-8-sig", newline="") as f:
     w = csv.writer(f)
     w.writerow(["类别", "文件", "大小(字节)", "时长", "说明", "完整路径"])
     for x in other:
-        kind = "重复副本" if x.get("duplicate_of") else "坏文件（空、损坏或没录成）" if x.get("broken") else "解不出画面"
+        kind = "重复副本" if x.get("duplicate_of") else "RAW 原片（没有能用的同名代理，文件里也读不出预览图，没法分类）" \
+            if x.get("raw") and not x.get("preview") and x["size"] >= 20000 \
+            else "坏文件（空、损坏或没录成）" if x.get("broken") else "解不出画面"
         w.writerow([kind, x["rel"], x["size"], x.get("duration"), ("和这个文件相同：" + x["duplicate_of"]) if x.get("duplicate_of") else x.get("extract_error", ""), x["path"]])
+    for x, p in stranded:
+        w.writerow(["RAW 原片（同名代理解不出画面，没法分类）", raw_rel(x, p), os.path.getsize(p) if os.path.exists(p) else "", "",
+                    "同名代理：" + x["rel"], p])
 
 # ---------- FCPXML 1.9 (FCP from 2020 on) ----------
 STD = [Fraction(24000, 1001), Fraction(24), Fraction(25), Fraction(30000, 1001), Fraction(30), Fraction(48), Fraction(50),
@@ -149,8 +169,9 @@ res = ET.SubElement(root, "resources")
 ev = ET.SubElement(ET.SubElement(root, "library"), "event", name=args.event)
 fmt_ids, folders = {}, collections.defaultdict(dict)  # folder -> {keyword: None} (ordered set)
 dim_folder = {d["key"]: d.get("folder", d["label"]) for d in DIMS if d.get("keyword", True)}
-n_folders = len({x["folder"] for x in clips})
-for n, x in enumerate(clips, 1):
+fcp_clips = [x for x in clips if not x.get("raw")]  # RAW originals: not sure FCP can read them, left out
+n_folders = len({x["folder"] for x in fcp_clips})
+for n, x in enumerate(fcp_clips, 1):
     fr = rate(x.get("fps"))
     fd = 1 / fr
     key = (x["w"], x["h"], fd)
@@ -203,17 +224,18 @@ for name in dict.fromkeys(order):
         for kw in sorted(folders[name]):
             ET.SubElement(cf, "keyword-collection", name=kw)
 ET.indent(root, space="  ")
-fcpxml = "" if args.no_fcpxml else os.path.join(OUT, f"{args.event}.fcpxml")
+fcpxml = "" if args.no_fcpxml or not fcp_clips else os.path.join(OUT, f"{args.event}.fcpxml")  # all RAW: no empty event
 if fcpxml:
     with open(fcpxml, "w", encoding="utf-8") as f:
         f.write('<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE fcpxml>\n\n' + ET.tostring(root, encoding="unicode") + "\n")
 
 # ---------- offline web page ----------
-slim_keys = ["id", "place", "place_src", "date", "folder", "rel", "duration", "portrait", "rating", "dup_group", "place_hint", "desc", "note", "path"] + [d["key"] for d in DIMS]
+slim_keys = ["id", "place", "place_src", "date", "folder", "rel", "duration", "portrait", "rating", "dup_group", "place_hint", "desc", "note", "path"] + (["companions"] if HAS_RAW else []) + (["raw"] if RAW1 else []) + [d["key"] for d in DIMS]
 data = {"title": args.title,
         "dims": [{"key": d["key"], "label": d["label"], "multi": bool(d.get("multi"))} for d in DIMS],
         "clips": [{k: x.get(k) for k in slim_keys} for x in clips],
-        "other": [{"rel": x["rel"], "kind": "重复副本" if x.get("duplicate_of") else "坏文件"} for x in other]}
+        "other": [{"rel": x["rel"], "kind": "重复副本" if x.get("duplicate_of") else "RAW 原片（没分类）" if x.get("raw") and x["size"] >= 20000 else "坏文件"}
+                  for x in other] + [{"rel": raw_rel(x, p), "kind": "RAW 原片（没分类）"} for x, p in stranded]}
 tpl = open(os.path.join(SKILL_DIR, "catalog_template.html"), encoding="utf-8").read()
 page = tpl.replace("__TITLE__", args.title.replace("<", "&lt;")).replace("__DATA__", json.dumps(data, ensure_ascii=False).replace("</", "<\\/"))
 open(os.path.join(OUT, "index.html"), "w", encoding="utf-8").write(page)
@@ -225,4 +247,6 @@ print(json.dumps({
     "地点": dict(collections.Counter(x["place"] or "（没设行程表）" for x in clips)),
     "FCP 关键词文件夹": {k: len(v) for k, v in folders.items()},
     "fcpxml": fcpxml,
+    **({"按预览图分类的 RAW 原片": len(RAW1)} if RAW1 else {}),
+    **({"FCP 未收录的 RAW 原片": len(RAW1)} if not args.no_fcpxml and RAW1 else {}),
 }, ensure_ascii=False, indent=1))

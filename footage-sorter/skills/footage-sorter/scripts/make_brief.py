@@ -11,7 +11,7 @@ import sys
 
 sys.dont_write_bytecode = True  # no __pycache__ inside the installed skill folder
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from common import UNSURE, load_vocab, work_paths  # noqa: E402
+from common import UNSURE, classify_ids, load_vocab, read_jsonl, work_paths  # noqa: E402
 
 ap = argparse.ArgumentParser()
 ap.add_argument("--work", required=True)
@@ -47,6 +47,12 @@ if {"日出日落金光", "蓝调时刻"} <= ALL:
     rules.append("- 光线：暖光照在主体上、或暖色是画面主角，算「日出日落金光」；整体偏蓝、只有天边一条暖色，算「蓝调时刻」。")
 if "行进中拍摄（车船缆车）" in ALL:
     rules.append("- 在车、船、缆车里往外拍的，运镜选「行进中拍摄（车船缆车）」。")
+# camera RAW originals classified from their one embedded preview picture: these lines only when there are some
+HAS_RAW1 = any(x.get("preview") for x in classify_ids(read_jsonl(P["manifest"])))
+sheet_raw = "第④行写着「RAW 只有1帧」的素材，右边只有一张图。" if HAS_RAW1 else ""
+if HAS_RAW1:
+    rules.append(f"- 第④行写着「RAW 只有1帧」的素材是相机 RAW 原片，只有开头一帧预览图：画面发灰、颜色淡、对比低是 log 记录方式，不算雾天，"
+                 f"不算曝光问题，也不要因此选黑白、低饱和之类的风格；运镜等从一帧看不出来的字段填「{UNSURE}」；note 里写「RAW 原片，只看了开头一帧」。")
 rules = "\n".join(rules)
 
 def build(mode):
@@ -70,7 +76,7 @@ def build(mode):
 ## 联系表怎么看
 每张联系表（sheet_XXX.jpg）最多 10 行，每行一条素材：
 - 左边五行字：① 素材编号（黄字，如 C0123）② 拍摄日期（「日期未知」表示读不到）③ 时长和所在文件夹 ④ `mot`（相邻抽帧的画面平均差异，越大说明画面变化越大，分不清是机位在动还是画面里的东西在动，要你看图判断）和 `br`（平均亮度 0-255）⑤ `sh`（锐度，越大越清楚；雪地、雾天、夜景本来就低），竖拍的素材在这一行末尾写 PORTRAIT。
-- 右边：这条素材从头到尾均匀抽的 6 帧。
+- 右边：这条素材从头到尾均匀抽的 6 帧。{sheet_raw}
 - 文件夹名只是参考（比如叫「手机」的文件夹里也可能有航拍），**和画面对不上时以画面为准**，在 note 里写一句。
 
 {out_head}
